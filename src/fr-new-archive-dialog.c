@@ -326,7 +326,7 @@ fr_new_archive_dialog_set_files_to_add (FrNewArchiveDialog  *self,
 }
 
 static void
-fr_overwrite_dialog_response_cb (GtkDialog *dialog, int response, GFile **file)
+overwrite_dialog_response_cb (GtkDialog *dialog, int response, GFile **file)
 {
   gboolean overwrite;
   overwrite     = response == GTK_RESPONSE_OK;
@@ -536,7 +536,7 @@ fr_new_archive_dialog_get_file (FrNewArchiveDialog  *self,
 						  NULL);
 
 		// TODO: the callback should return the file back
-		g_signal_connect (GTK_MESSAGE_DIALOG (dialog), "response", G_CALLBACK (fr_overwrite_dialog_response_cb), &file);
+		g_signal_connect (GTK_MESSAGE_DIALOG (dialog), "response", G_CALLBACK (overwrite_dialog_response_cb), &file);
 		gtk_widget_show (dialog);
 
 		g_free (secondary_message);
