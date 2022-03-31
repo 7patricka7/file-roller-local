@@ -28,6 +28,30 @@
 #include "glib-utils.h"
 #include "gtk-utils.h"
 
+static void
+dialog_get_file_async_cb (GObject *source_object, GAsyncResult *res, gpointer user_data)
+{
+    FrNewArchiveDialog *dialog;
+    FrGetFileData *data;
+    GFile *file;
+    const char *mime_type;
+    FrWindow *window;
+
+    dialog = FR_NEW_ARCHIVE_DIALOG (source_object);
+
+    data = user_data;
+    if (data == NULL)
+        return;
+
+    file = *data->file;
+    mime_type = *data->mime_type;
+    window = FR_WINDOW (data->window);
+
+    fr_window_set_password (window, fr_new_archive_dialog_get_password (FR_NEW_ARCHIVE_DIALOG (dialog)));
+    fr_window_set_encrypt_header (window, fr_new_archive_dialog_get_encrypt_header (FR_NEW_ARCHIVE_DIALOG (dialog)));
+    fr_window_set_volume_size (window, fr_new_archive_dialog_get_volume_size (FR_NEW_ARCHIVE_DIALOG (dialog)));
+    fr_window_create_archive_and_continue (window, file, mime_type, NULL);
+}
 
 static void
 dialog_response_cb (GtkDialog *dialog,
@@ -37,19 +61,9 @@ dialog_response_cb (GtkDialog *dialog,
 	FrWindow *window = user_data;
 
 	if (response_id == GTK_RESPONSE_OK) {
-		GFile      *file;
 		const char *mime_type;
 
-		file = fr_new_archive_dialog_get_file (FR_NEW_ARCHIVE_DIALOG (dialog), &mime_type);
-		if (file == NULL)
-			return;
-
-		fr_window_set_password (window, fr_new_archive_dialog_get_password (FR_NEW_ARCHIVE_DIALOG (dialog)));
-		fr_window_set_encrypt_header (window, fr_new_archive_dialog_get_encrypt_header (FR_NEW_ARCHIVE_DIALOG (dialog)));
-		fr_window_set_volume_size (window, fr_new_archive_dialog_get_volume_size (FR_NEW_ARCHIVE_DIALOG (dialog)));
-		fr_window_create_archive_and_continue (window, file, mime_type, NULL);
-
-		g_object_unref (file);
+		fr_new_archive_dialog_get_file_async (FR_NEW_ARCHIVE_DIALOG (dialog), &mime_type, dialog_get_file_async_cb);
 	}
 	else
 		fr_window_batch_stop (window);

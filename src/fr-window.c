@@ -4095,30 +4095,28 @@ _fr_window_get_ask_to_open_destination (FrWindow *window)
 	return ! window->priv->batch_mode || window->priv->notify;
 }
 
-
-static void
-new_archive_dialog_response_cb (GtkDialog *dialog,
-				int        response,
-				gpointer   user_data)
+static void new_archive_get_file_async_cb(GObject *source_object, GAsyncResult *res, gpointer user_data)
 {
-	FrWindow   *window = user_data;
-	GFile      *file;
-	const char *mime_type;
-	GtkWidget  *archive_window;
+    const char *password;
+    int volume_size;
+    FrNewArchiveDialog *dialog;
+	FrGetFileData *data;
+    GFile *file;
+    gboolean encrypt_header;
+	GtkWidget *archive_window;
 	gboolean    new_window;
-	const char *password;
-	gboolean    encrypt_header;
-	int         volume_size;
+    const char *mime_type;
+	FrWindow *window;
 
-	if ((response == GTK_RESPONSE_CANCEL) || (response == GTK_RESPONSE_DELETE_EVENT)) {
-		gtk_widget_destroy (GTK_WIDGET (dialog));
-		_archive_operation_cancelled (window, FR_ACTION_CREATING_NEW_ARCHIVE);
-		return;
-	}
+    dialog = FR_NEW_ARCHIVE_DIALOG (source_object);
 
-	file = fr_new_archive_dialog_get_file (FR_NEW_ARCHIVE_DIALOG (dialog), &mime_type);
-	if (file == NULL)
+	data = user_data;
+	if (data == NULL)
 		return;
+
+    file = *data->file;
+	mime_type = *data->mime_type;
+	window = FR_WINDOW(data->window);
 
 	new_window = fr_window_archive_is_present (window) && ! fr_window_is_batch_mode (window);
 	if (new_window)
@@ -4126,9 +4124,9 @@ new_archive_dialog_response_cb (GtkDialog *dialog,
 	else
 		archive_window = (GtkWidget *) window;
 
-	password = fr_new_archive_dialog_get_password (FR_NEW_ARCHIVE_DIALOG (dialog));
-	encrypt_header = fr_new_archive_dialog_get_encrypt_header (FR_NEW_ARCHIVE_DIALOG (dialog));
-	volume_size = fr_new_archive_dialog_get_volume_size (FR_NEW_ARCHIVE_DIALOG (dialog));
+	password = fr_new_archive_dialog_get_password (dialog);
+	encrypt_header = fr_new_archive_dialog_get_encrypt_header (dialog);
+	volume_size = fr_new_archive_dialog_get_volume_size (dialog);
 
 	fr_window_set_password (FR_WINDOW (archive_window), password);
 	fr_window_set_encrypt_header (FR_WINDOW (archive_window), encrypt_header);
@@ -4145,6 +4143,23 @@ new_archive_dialog_response_cb (GtkDialog *dialog,
 		gtk_widget_destroy (archive_window);
 
 	g_object_unref (file);
+}
+
+static void
+new_archive_dialog_response_cb (GtkDialog *dialog,
+                                int response,
+                                gpointer user_data)
+{
+    FrWindow *window = user_data;
+    const char *mime_type;
+
+    if ((response == GTK_RESPONSE_CANCEL) || (response == GTK_RESPONSE_DELETE_EVENT)) {
+        gtk_widget_destroy (GTK_WIDGET (dialog));
+        _archive_operation_cancelled (window, FR_ACTION_CREATING_NEW_ARCHIVE);
+        return;
+    }
+
+    fr_new_archive_dialog_get_file_async (FR_NEW_ARCHIVE_DIALOG (dialog), &mime_type, new_archive_get_file_async_cb);
 }
 
 typedef struct
@@ -7708,6 +7723,41 @@ fr_window_archive_save_as (FrWindow   *window,
 			    cdata);
 }
 
+static void
+save_as_archive_get_file_async_cb (GObject *source_object, GAsyncResult *res, gpointer user_data)
+{
+    const char *password;
+    int volume_size;
+    GSettings *settings;
+    FrNewArchiveDialog *dialog;
+    GFile *file;
+    gboolean encrypt_header;
+	const char *mime_type;
+	FrGetFileData *data;
+	FrWindow *window;
+
+    dialog = FR_NEW_ARCHIVE_DIALOG (source_object);
+    data = user_data;
+	if (data == NULL)
+		return;
+
+    file = *data->file;
+	mime_type = *data->mime_type;
+	window = FR_WINDOW(data->window);
+
+    password = fr_new_archive_dialog_get_password (dialog);
+    encrypt_header = fr_new_archive_dialog_get_encrypt_header (dialog);
+    volume_size = fr_new_archive_dialog_get_volume_size (dialog);
+
+    settings = g_settings_new (FILE_ROLLER_SCHEMA_NEW);
+    g_settings_set_int (settings, PREF_NEW_VOLUME_SIZE, volume_size);
+    g_object_unref (settings);
+
+    fr_window_archive_save_as (window, file, mime_type, password, encrypt_header, volume_size);
+
+    gtk_widget_destroy (GTK_WIDGET (dialog));
+    g_object_unref (file);
+}
 
 static void
 save_as_archive_dialog_response_cb (GtkDialog *dialog,
@@ -7715,12 +7765,7 @@ save_as_archive_dialog_response_cb (GtkDialog *dialog,
 				    gpointer   user_data)
 {
 	FrWindow   *window = user_data;
-	GFile      *file;
 	const char *mime_type;
-	const char *password;
-	gboolean    encrypt_header;
-	int         volume_size;
-	GSettings  *settings;
 
 	if ((response == GTK_RESPONSE_CANCEL) || (response == GTK_RESPONSE_DELETE_EVENT)) {
 		gtk_widget_destroy (GTK_WIDGET (dialog));
@@ -7731,24 +7776,8 @@ save_as_archive_dialog_response_cb (GtkDialog *dialog,
 	if (response != GTK_RESPONSE_OK)
 		return;
 
-	file = fr_new_archive_dialog_get_file (FR_NEW_ARCHIVE_DIALOG (dialog), &mime_type);
-	if (file == NULL)
-		return;
-
-	password = fr_new_archive_dialog_get_password (FR_NEW_ARCHIVE_DIALOG (dialog));
-	encrypt_header = fr_new_archive_dialog_get_encrypt_header (FR_NEW_ARCHIVE_DIALOG (dialog));
-	volume_size = fr_new_archive_dialog_get_volume_size (FR_NEW_ARCHIVE_DIALOG (dialog));
-
-	settings = g_settings_new (FILE_ROLLER_SCHEMA_NEW);
-	g_settings_set_int (settings, PREF_NEW_VOLUME_SIZE, volume_size);
-	g_object_unref (settings);
-
-	fr_window_archive_save_as (window, file, mime_type, password, encrypt_header, volume_size);
-
-	gtk_widget_destroy (GTK_WIDGET (dialog));
-	g_object_unref (file);
+	fr_new_archive_dialog_get_file_async (FR_NEW_ARCHIVE_DIALOG (dialog), &mime_type, save_as_archive_get_file_async_cb);	
 }
-
 
 void
 fr_window_action_save_as (FrWindow *window)

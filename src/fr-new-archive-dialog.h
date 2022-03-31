@@ -40,9 +40,17 @@ GtkWidget *     fr_new_archive_dialog_new                 (const char          *
 							   GFile               *original_file);
 void		fr_new_archive_dialog_set_files_to_add    (FrNewArchiveDialog  *dialog,
 							   GList               *file_list /* GFile list */);
-//TODO: make this asynchronous
-GFile *         fr_new_archive_dialog_get_file            (FrNewArchiveDialog  *dialog,
-							   const char         **mime_type);
+
+typedef struct {
+	GFile** file;
+	GtkWindow* window;
+	const char **mime_type;
+} FrGetFileData;
+
+void 	fr_new_archive_dialog_get_file_async (FrNewArchiveDialog *dialog,
+											const char **mime_type,
+											GAsyncReadyCallback callback);
+
 const char *    fr_new_archive_dialog_get_password        (FrNewArchiveDialog  *dialog);
 gboolean        fr_new_archive_dialog_get_encrypt_header  (FrNewArchiveDialog  *dialog);
 int             fr_new_archive_dialog_get_volume_size     (FrNewArchiveDialog  *dialog);

@@ -48,6 +48,7 @@ struct _FrNewArchiveDialog {
 	gboolean    can_create_volumes;
 	GFile      *original_file;
 	GList      *files_to_add;
+	GtkWindow  *parent;
 };
 
 
@@ -207,6 +208,7 @@ _fr_new_archive_dialog_construct (FrNewArchiveDialog *self,
 	gtk_container_set_border_width (GTK_CONTAINER (self), 5);
 
 	self->builder = gtk_builder_new_from_resource (FILE_ROLLER_RESOURCE_UI_PATH "new-archive-dialog.ui");
+	self->parent = parent;
 
 	_g_object_unref (self->original_file);
 	self->original_file = _g_object_ref (original_file);
@@ -326,50 +328,59 @@ fr_new_archive_dialog_set_files_to_add (FrNewArchiveDialog  *self,
 }
 
 static void
-overwrite_dialog_response_cb (GtkDialog *dialog, int response, GFile **file)
+overwrite_dialog_response_cb (GtkDialog *dialog, int response, GTask *task)
 {
-  gboolean overwrite;
-  overwrite     = response == GTK_RESPONSE_OK;
-  GError *error = NULL;
+    gboolean overwrite;
+    overwrite = response == GTK_RESPONSE_OK;
+    GError *error = NULL;
+    GFile *file = g_task_get_task_data (task);
 
-  if (overwrite)
-    {
-      g_file_delete (*file, NULL, &error);
-      if (error != NULL)
-        {
-          GtkWidget *err_dialog = _gtk_error_dialog_new (
-              GTK_WINDOW (&dialog->window), GTK_DIALOG_MODAL, NULL,
-              _ ("Could not delete the old archive."), "%s", error->message);
+    if (overwrite) {
+        g_file_delete (file, NULL, &error);
+        if (error != NULL) {
+            GtkWidget *err_dialog = _gtk_error_dialog_new (
+                GTK_WINDOW (&dialog->window),
+                GTK_DIALOG_MODAL,
+                NULL,
+                _ ("Could not delete the old archive."),
+                "%s",
+                error->message);
 
-          g_signal_connect (GTK_MESSAGE_DIALOG (err_dialog), "response",
-                            G_CALLBACK (gtk_widget_destroy), NULL);
-          gtk_widget_show (err_dialog);
+            g_signal_connect (GTK_MESSAGE_DIALOG (err_dialog), "response", G_CALLBACK (gtk_widget_destroy), NULL);
+            gtk_widget_show (err_dialog);
 
-          g_error_free (error);
-          g_object_unref (*file);
+            g_error_free (error);
+            g_task_return_pointer (task, file, g_object_unref);
+        } else {
+            g_task_return_error (task, error);
         }
     }
-  else
-    {
-      g_clear_object (file);
-    }
 
-  gtk_widget_destroy (GTK_WIDGET (dialog));
+    gtk_widget_destroy (GTK_WIDGET (dialog));
 }
 
-GFile *
-fr_new_archive_dialog_get_file (FrNewArchiveDialog  *self,
-			        const char         **mime_type)
-{
-	const char *basename;
-	int         n_format;
-	char       *basename_ext;
-	GFile      *parent;
-	GFile      *file;
-	GError     *error = NULL;
-	const char *file_mime_type;
-	GFileInfo  *parent_info;
-	GtkWidget  *dialog;
+void
+fr_new_archive_dialog_get_file_async (FrNewArchiveDialog *self,
+                                      const char **mime_type,
+                                      GAsyncReadyCallback callback)
+{	
+	const char 	*basename;
+	int        	 n_format;
+	char       	*basename_ext;
+	GFile      	*parent;
+	GFile      	*file;
+	GError     	*error = NULL;
+	const char 	*file_mime_type;
+	GFileInfo  	*parent_info;
+	GtkWidget  	*dialog;
+	GTask 	   	*task;
+	FrGetFileData *data;
+
+	data = g_new0 (FrGetFileData, 1);
+	data->file = &file;
+	data->mime_type = mime_type;
+	data->window = self->parent;
+	task = g_task_new(self, NULL, callback, data);
 
 	/* Check whether the user entered a valid archive name. */
 	basename = gtk_entry_get_text (GTK_ENTRY (GET_WIDGET ("filename_entry")));
@@ -384,7 +395,8 @@ fr_new_archive_dialog_get_file (FrNewArchiveDialog  *self,
 		g_signal_connect (GTK_MESSAGE_DIALOG (dialog), "response", G_CALLBACK (gtk_widget_destroy), NULL);
 		gtk_widget_show (dialog);
 
-		return NULL;
+		g_task_return_pointer (task, NULL, g_object_unref);
+		return;
 	}
 
 	/* file */
@@ -401,7 +413,8 @@ fr_new_archive_dialog_get_file (FrNewArchiveDialog  *self,
 		g_signal_connect (GTK_MESSAGE_DIALOG (dialog), "response", G_CALLBACK (gtk_widget_destroy), NULL);
 		gtk_widget_show (dialog);
 
-		return NULL;
+		g_task_return_pointer (task, NULL, g_object_unref);
+		return;
 	}
 
 	basename_ext = g_strconcat (basename, mime_type_desc[n_format].default_ext, NULL);
@@ -422,19 +435,18 @@ fr_new_archive_dialog_get_file (FrNewArchiveDialog  *self,
 		g_free (basename_ext);
 		g_object_unref (parent);
 
-		return NULL;
+		g_task_return_pointer (task, NULL, g_object_unref);
+		return;
 	}
 
 	g_free (basename_ext);
 
 	/* mime type */
-
 	file_mime_type = mime_type_desc[n_format].mime_type;
 	if (mime_type != NULL)
 		*mime_type = file_mime_type;
 
 	/* check permissions */
-
 	parent_info = g_file_query_info (parent,
 				         (G_FILE_ATTRIBUTE_ACCESS_CAN_READ ","
 				          G_FILE_ATTRIBUTE_ACCESS_CAN_WRITE ","
@@ -453,7 +465,8 @@ fr_new_archive_dialog_get_file (FrNewArchiveDialog  *self,
 		g_object_unref (parent_info);
 		g_object_unref (file);
 
-		return NULL;
+		g_task_return_pointer (task, NULL, g_object_unref);
+		return;
 	}
 
 	if (g_file_info_has_attribute (parent_info, G_FILE_ATTRIBUTE_ACCESS_CAN_WRITE) &&
@@ -471,11 +484,11 @@ fr_new_archive_dialog_get_file (FrNewArchiveDialog  *self,
 		g_object_unref (parent_info);
 		g_object_unref (file);
 
-		return NULL;
+		g_task_return_pointer (task, NULL, g_object_unref);
+		return;
 	}
 
 	/* check whehter the file is equal to the original file */
-
 	if ((self->original_file != NULL) && (g_file_equal (file, self->original_file))) {
 		dialog = _gtk_error_dialog_new (GTK_WINDOW (self),
 						GTK_DIALOG_MODAL,
@@ -490,11 +503,11 @@ fr_new_archive_dialog_get_file (FrNewArchiveDialog  *self,
 		g_object_unref (parent_info);
 		g_object_unref (file);
 
-		return NULL;
+		g_task_return_pointer (task, NULL, g_object_unref);
+		return;
 	}
 
 	/* check whether the file is included in the files to add */
-
 	{
 		GList *scan;
 
@@ -513,10 +526,13 @@ fr_new_archive_dialog_get_file (FrNewArchiveDialog  *self,
 				g_object_unref (parent_info);
 				g_object_unref (file);
 
-				return NULL;
+				g_task_return_pointer (task, NULL, g_object_unref);
+				return;
 			}
 		}
 	}
+
+	g_task_set_task_data(task, file, (GDestroyNotify)g_clear_object);
 
 	/* overwrite confirmation */
 	if (g_file_query_exists (file, NULL)) {
@@ -535,18 +551,20 @@ fr_new_archive_dialog_get_file (FrNewArchiveDialog  *self,
 						  _("_Replace"), GTK_RESPONSE_OK,
 						  NULL);
 
-		// TODO: the callback should return the file back
-		g_signal_connect (GTK_MESSAGE_DIALOG (dialog), "response", G_CALLBACK (overwrite_dialog_response_cb), &file);
+
+		g_signal_connect (GTK_MESSAGE_DIALOG (dialog), "response", G_CALLBACK (overwrite_dialog_response_cb), task);
 		gtk_widget_show (dialog);
 
 		g_free (secondary_message);
 		g_free (message);
 		g_free (filename);
 	}
+	else
+	{
+		g_task_return_pointer (task, file, g_object_unref);
+	}
 
 	g_object_unref (parent_info);
-
-	return file;
 }
 
 
