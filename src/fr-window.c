@@ -4167,50 +4167,45 @@ static void add_file_dialog_response_cb(GtkDialog *dialog,
 	_g_object_list_unref (data->list);
 }
 
-static void create_archive_dialog_response_cb(GtkDialog *dialog, int response, gpointer user_data)
+static void
+create_archive_dialog_response_cb (GtkDialog *dialog, int response, gpointer user_data)
 {
-	if (response != GTK_RESPONSE_YES)
-		return;
+  if (response != GTK_RESPONSE_YES)
+    return;
 
-	DragData *data = user_data;
-	FrWindow *window = data->window;
-	GList *list = data->list;
-	GFile *first_file;
-	GFile *folder;
-	char *archive_name;
-	GtkWidget *d;
+  DragData  *data   = user_data;
+  FrWindow  *window = data->window;
+  GList     *list   = data->list;
+  GFile     *first_file;
+  GFile     *folder;
+  char      *archive_name;
+  GtkWidget *d;
 
-	fr_window_free_batch_data(window);
-	fr_window_batch_append_action(window,
-								  FR_BATCH_ACTION_ADD,
-								  _g_object_list_ref(list),
-								  (GFreeFunc)_g_object_list_unref);
+  fr_window_free_batch_data (window);
+  fr_window_batch_append_action (window, FR_BATCH_ACTION_ADD, _g_object_list_ref (list),
+                                 (GFreeFunc) _g_object_list_unref);
 
-	first_file = G_FILE(list->data);
-	folder = g_file_get_parent(first_file);
-	if (folder != NULL)
-		fr_window_set_open_default_dir(window, folder);
+  first_file = G_FILE (list->data);
+  folder     = g_file_get_parent (first_file);
+  if (folder != NULL)
+    fr_window_set_open_default_dir (window, folder);
 
-	if ((list->next != NULL) && (folder != NULL))
-		archive_name = g_file_get_basename(folder);
-	else
-		archive_name = g_file_get_basename(first_file);
+  if ((list->next != NULL) && (folder != NULL))
+    archive_name = g_file_get_basename (folder);
+  else
+    archive_name = g_file_get_basename (first_file);
 
-	d = fr_new_archive_dialog_new(_("New Archive"),
-									   GTK_WINDOW(window),
-									   FR_NEW_ARCHIVE_ACTION_SAVE_AS,
-									   fr_window_get_open_default_dir(window),
-									   archive_name,
-									   NULL);
-	gtk_window_set_modal(GTK_WINDOW(d), TRUE);
-	g_signal_connect(GTK_DIALOG(d),
-					 "response",
-					 G_CALLBACK(new_archive_dialog_response_cb),
-					 window);
-	gtk_window_present(GTK_WINDOW(d));
+  d = fr_new_archive_dialog_new (_ ("New Archive"), GTK_WINDOW (window),
+                                 FR_NEW_ARCHIVE_ACTION_SAVE_AS,
+                                 fr_window_get_open_default_dir (window),
+                                 archive_name, NULL);
+  gtk_window_set_modal (GTK_WINDOW (d), TRUE);
+  g_signal_connect (GTK_DIALOG (d), "response",
+                    G_CALLBACK (new_archive_dialog_response_cb), window);
+  gtk_window_present (GTK_WINDOW (d));
 
-	g_free(archive_name);
-	_g_object_unref(folder);
+  g_free (archive_name);
+  _g_object_unref (folder);
 }
 
 static void
