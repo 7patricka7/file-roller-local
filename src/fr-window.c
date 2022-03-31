@@ -2170,8 +2170,9 @@ show_folder (GtkWindow *parent_window,
 					   message,
 					   "%s",
 					   error->message);
-		gtk_dialog_run (GTK_DIALOG (d));
-		gtk_widget_destroy (d);
+		
+		g_signal_connect(GTK_MESSAGE_DIALOG(d), "response", G_CALLBACK(gtk_widget_destroy), NULL);
+		gtk_widget_show(d);
 
 		g_free (message);
 		g_clear_error (&error);
@@ -4146,6 +4147,24 @@ new_archive_dialog_response_cb (GtkDialog *dialog,
 	g_object_unref (file);
 }
 
+typedef struct
+{
+	FrWindow *window;
+	GList *list;
+} AddFileDialogData;
+
+static void add_file_dialog_response_cb(GtkDialog *dialog,
+										int response,
+										AddFileDialogData *data)
+{
+	if (response == 0) /* Add */
+		fr_window_archive_add_dropped_items(data->window, data->list);
+	else if (response == 1) /* Open */
+		fr_window_archive_open(data->window, G_FILE(data->list->data), GTK_WINDOW(data->window));
+
+	gtk_widget_destroy(GTK_WIDGET(dialog));
+	_g_object_list_unref (data->list);
+}
 
 static void
 fr_window_drag_data_received  (GtkWidget          *widget,
@@ -4202,8 +4221,14 @@ fr_window_drag_data_received  (GtkWidget          *widget,
 					   NULL,
 					   _("Could not perform the operation"),
 					   NULL);
-		gtk_dialog_run (GTK_DIALOG (d));
-		gtk_widget_destroy(d);
+		
+		AddFileDialogData* data;
+		data = g_new0 (AddFileDialogData, 1);
+		data->window = window;
+		data->list = list;
+
+		g_signal_connect(GTK_MESSAGE_DIALOG(d), "response", G_CALLBACK(add_file_dialog_response_cb), data);
+		gtk_widget_show(d);
 
  		return;
 	}
@@ -4221,7 +4246,6 @@ fr_window_drag_data_received  (GtkWidget          *widget,
 	{
 		if (one_file && is_an_archive) {
 			GtkWidget *d;
-			gint       r;
 
 			d = _gtk_message_dialog_new (GTK_WINDOW (window),
 						     GTK_DIALOG_MODAL,
@@ -4234,13 +4258,8 @@ fr_window_drag_data_received  (GtkWidget          *widget,
 
 			gtk_dialog_set_default_response (GTK_DIALOG (d), 2);
 
-			r = gtk_dialog_run (GTK_DIALOG (d));
-			gtk_widget_destroy (GTK_WIDGET (d));
-
-			if (r == 0)  /* Add */
-				fr_window_archive_add_dropped_items (window, list);
-			else if (r == 1)  /* Open */
-				fr_window_archive_open (window, G_FILE (list->data), GTK_WINDOW (window));
+			g_signal_connect(GTK_MESSAGE_DIALOG(d), "response", G_CALLBACK(gtk_widget_destroy), NULL);
+			gtk_widget_show(d);
  		}
  		else
 			fr_window_archive_add_dropped_items (window, list);
@@ -4304,8 +4323,6 @@ fr_window_drag_data_received  (GtkWidget          *widget,
 			}
 		}
 	}
-
-	_g_object_list_unref (list);
 
 	debug (DEBUG_INFO, "::DragDataReceived <--\n");
 }
