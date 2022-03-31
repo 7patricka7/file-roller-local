@@ -326,36 +326,35 @@ fr_new_archive_dialog_set_files_to_add (FrNewArchiveDialog  *self,
 }
 
 static void
-fr_overwrite_dialog_response_cb(GtkDialog *dialog,
-								 int response,
-								 GFile *file)
+fr_overwrite_dialog_response_cb (GtkDialog *dialog, int response, GFile **file)
 {
-	gboolean  overwrite;
-	overwrite = response == GTK_RESPONSE_OK;
-	GError     *error = NULL;
+  gboolean overwrite;
+  overwrite     = response == GTK_RESPONSE_OK;
+  GError *error = NULL;
 
-	if (overwrite) {
-		g_file_delete(file, NULL, &error);
-		if (error != NULL) {
-			GtkWidget *err_dialog = _gtk_error_dialog_new(GTK_WINDOW(&dialog->window),
-														  GTK_DIALOG_MODAL,
-														  NULL,
-														  _("Could not delete the old archive."),
-														  "%s",
-														  error->message);
+  if (overwrite)
+    {
+      g_file_delete (*file, NULL, &error);
+      if (error != NULL)
+        {
+          GtkWidget *err_dialog = _gtk_error_dialog_new (
+              GTK_WINDOW (&dialog->window), GTK_DIALOG_MODAL, NULL,
+              _ ("Could not delete the old archive."), "%s", error->message);
 
-			g_signal_connect(GTK_MESSAGE_DIALOG(err_dialog), "response", G_CALLBACK(gtk_widget_destroy), NULL);
-			gtk_widget_show(err_dialog);
+          g_signal_connect (GTK_MESSAGE_DIALOG (err_dialog), "response",
+                            G_CALLBACK (gtk_widget_destroy), NULL);
+          gtk_widget_show (err_dialog);
 
-			g_error_free(error);
-			g_object_unref (file);
-		}
-	}
-	else {
-		g_clear_object (&file);
-	}
+          g_error_free (error);
+          g_object_unref (*file);
+        }
+    }
+  else
+    {
+      g_clear_object (file);
+    }
 
-	gtk_widget_destroy (GTK_WIDGET(dialog));
+  gtk_widget_destroy (GTK_WIDGET (dialog));
 }
 
 GFile *
@@ -537,7 +536,7 @@ fr_new_archive_dialog_get_file (FrNewArchiveDialog  *self,
 						  NULL);
 
 		// TODO: the callback should return the file back
-		g_signal_connect (GTK_MESSAGE_DIALOG (dialog), "response", G_CALLBACK (fr_overwrite_dialog_response_cb), file);
+		g_signal_connect (GTK_MESSAGE_DIALOG (dialog), "response", G_CALLBACK (fr_overwrite_dialog_response_cb), &file);
 		gtk_widget_show (dialog);
 
 		g_free (secondary_message);
