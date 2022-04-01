@@ -6909,13 +6909,98 @@ archive_is_encrypted (FrWindow *window,
 }
 
 
+static gboolean
+extract_make_directory_tree (gboolean do_not_extract, ExtractData *edata)
+{
+    FrWindow *window = edata->window;
+	GError   *error = NULL;
+
+    if (! do_not_extract && ! _g_file_make_directory_tree (edata->destination, 0755, &error))
+	{
+	    GtkWidget *d;
+	    char      *details;
+
+	    details = g_strdup_printf (_ ("Could not create the destination "
+	                                  "folder: %s."),
+	                               error->message);
+
+	    d = _gtk_error_dialog_new (GTK_WINDOW (window), 0, NULL,
+	                               _ ("Extraction not performed"), "%s", details);
+	    g_clear_error (&error);
+	    fr_window_show_error_dialog (window, d, GTK_WINDOW (window), details);
+	    fr_window_batch_stop (window);
+	    fr_window_dnd_extraction_finished (window, TRUE);
+
+	    g_free (details);
+
+	    return FALSE;
+	}
+
+	return TRUE;
+}
+
+static void
+extract_perform (gboolean do_not_extract, ExtractData *edata)
+{
+    FrWindow *window = edata->window;
+    if (do_not_extract)
+	{
+	    GtkWidget *d;
+
+	    d = _gtk_message_dialog_new (GTK_WINDOW (window), 0,
+	                                 _ ("Extraction not performed"), NULL,
+	                                 _GTK_LABEL_CLOSE, GTK_RESPONSE_OK, NULL);
+	    gtk_dialog_set_default_response (GTK_DIALOG (d), GTK_RESPONSE_OK);
+	    fr_window_show_error_dialog (window, d, GTK_WINDOW (window),
+	                                 _ ("Extraction not performed"));
+	    fr_window_batch_stop (window);
+	    fr_window_dnd_extraction_finished (window, TRUE);
+
+	    return;
+	}
+
+    if (edata->overwrite == FR_OVERWRITE_ASK)
+	{
+	    OverwriteData *odata;
+
+	    odata              = overwrite_data_new (window);
+	    odata->edata       = edata;
+	    odata->extract_all = (edata->file_list == NULL)
+	                         || (g_list_length (edata->file_list)
+	                             == window->archive->files->len);
+	    if (edata->file_list == NULL)
+		edata->file_list = fr_window_get_file_list (window);
+	    odata->current_file = odata->edata->file_list;
+
+	    _fr_window_ask_overwrite_dialog (odata);
+	}
+    else
+		_fr_window_archive_extract_from_edata (window, edata);
+}
+
+static void
+should_extract_dialog_response_cb (GtkDialog *dialog, 
+								int response, 
+								gpointer user_data)
+{
+    gboolean do_not_extract = FALSE;
+	ExtractData *edata = user_data;
+
+    if (response != GTK_RESPONSE_YES)
+		do_not_extract = TRUE;
+
+	if(extract_make_directory_tree(do_not_extract, edata))
+		extract_perform(do_not_extract, edata);
+
+    gtk_widget_destroy (GTK_WIDGET (dialog));
+}
+
 /* ask some questions to the user before calling _fr_window_archive_extract_from_edata */
 static void
 _fr_window_archive_extract_from_edata_maybe (FrWindow    *window,
 					     ExtractData *edata)
 {
 	gboolean  do_not_extract = FALSE;
-	GError   *error = NULL;
 
 	if (archive_is_encrypted (window, edata->file_list) && (window->priv->password == NULL)) {
 		dlg_ask_password (window);
@@ -6930,7 +7015,6 @@ _fr_window_archive_extract_from_edata_maybe (FrWindow    *window,
 
 		if (! ForceDirectoryCreation && ! edata->avoid_tarbombs) {
 			GtkWidget *d;
-			int        r;
 			char      *folder_name;
 			char      *msg;
 
@@ -6947,68 +7031,21 @@ _fr_window_archive_extract_from_edata_maybe (FrWindow    *window,
 						     NULL);
 
 			gtk_dialog_set_default_response (GTK_DIALOG (d), GTK_RESPONSE_YES);
-			r = gtk_dialog_run (GTK_DIALOG (d));
-			gtk_widget_destroy (GTK_WIDGET (d));
+			g_signal_connect(GTK_MESSAGE_DIALOG(d), "response", G_CALLBACK(should_extract_dialog_response_cb), edata);
+			gtk_widget_show(d);
 
 			g_free (msg);
-
-			if (r != GTK_RESPONSE_YES)
-				do_not_extract = TRUE;
 		}
-
-		if (! do_not_extract && ! _g_file_make_directory_tree (edata->destination, 0755, &error)) {
-			GtkWidget *d;
-			char      *details;
-
-			details = g_strdup_printf (_("Could not create the destination folder: %s."), error->message);
-			d = _gtk_error_dialog_new (GTK_WINDOW (window),
-						   0,
-						   NULL,
-						   _("Extraction not performed"),
-						   "%s",
-						   details);
-			g_clear_error (&error);
-			fr_window_show_error_dialog (window, d, GTK_WINDOW (window), details);
-			fr_window_batch_stop (window);
-			fr_window_dnd_extraction_finished (window, TRUE);
-
-			g_free (details);
-
-			return;
+		else
+		{
+			if(extract_make_directory_tree(do_not_extract, edata))
+				extract_perform(do_not_extract, edata);
 		}
-	}
-
-	if (do_not_extract) {
-		GtkWidget *d;
-
-		d = _gtk_message_dialog_new (GTK_WINDOW (window),
-					     0,
-					     _("Extraction not performed"),
-					     NULL,
-					     _GTK_LABEL_CLOSE, GTK_RESPONSE_OK,
-					     NULL);
-		gtk_dialog_set_default_response (GTK_DIALOG (d), GTK_RESPONSE_OK);
-		fr_window_show_error_dialog (window, d, GTK_WINDOW (window), _("Extraction not performed"));
-		fr_window_batch_stop (window);
-		fr_window_dnd_extraction_finished (window, TRUE);
-
-		return;
-	}
-
-	if (edata->overwrite == FR_OVERWRITE_ASK) {
-		OverwriteData *odata;
-
-		odata = overwrite_data_new (window);
-		odata->edata = edata;
-		odata->extract_all = (edata->file_list == NULL) || (g_list_length (edata->file_list) == window->archive->files->len);
-		if (edata->file_list == NULL)
-			edata->file_list = fr_window_get_file_list (window);
-		odata->current_file = odata->edata->file_list;
-
-		_fr_window_ask_overwrite_dialog (odata);
 	}
 	else
-		_fr_window_archive_extract_from_edata (window, edata);
+	{
+		extract_perform(do_not_extract, edata);
+	}
 }
 
 
