@@ -343,13 +343,13 @@ fr_command_7z_add (FrCommand  *command,
 		fr_process_add_arg (command->process, "-mx=1");
 		break;
 	case FR_COMPRESSION_FAST:
-		fr_process_add_arg (command->process, "-mx=5");
+		fr_process_add_arg (command->process, "-mx=3");
 		break;
 	case FR_COMPRESSION_NORMAL:
-		fr_process_add_arg (command->process, "-mx=7");
+		fr_process_add_arg (command->process, "-mx=5");
 		break;
 	case FR_COMPRESSION_MAXIMUM:
-		fr_process_add_arg (command->process, "-mx=9");
+		fr_process_add_arg (command->process, "-mx=7");
 		if (! _g_mime_type_matches (archive->mime_type, "application/zip")
 		    && ! _g_mime_type_matches (archive->mime_type, "application/x-cbz"))
 		{
