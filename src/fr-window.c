@@ -2116,8 +2116,9 @@ show_folder (GtkWindow *parent_window,
 					   message,
 					   "%s",
 					   error->message);
-		gtk_dialog_run (GTK_DIALOG (d));
-		gtk_widget_destroy (d);
+		
+		g_signal_connect(GTK_MESSAGE_DIALOG(d), "response", G_CALLBACK(gtk_widget_destroy), NULL);
+		gtk_widget_show(d);
 
 		g_free (message);
 		g_clear_error (&error);
@@ -4035,30 +4036,28 @@ _fr_window_get_ask_to_open_destination (FrWindow *window)
 	return ! window->priv->batch_mode || window->priv->notify;
 }
 
-
-static void
-new_archive_dialog_response_cb (GtkDialog *dialog,
-				int        response,
-				gpointer   user_data)
+static void new_archive_get_file_async_cb(GObject *source_object, GAsyncResult *res, gpointer user_data)
 {
-	FrWindow   *window = user_data;
-	GFile      *file;
-	const char *mime_type;
-	GtkWidget  *archive_window;
+    const char *password;
+    int volume_size;
+    FrNewArchiveDialog *dialog;
+	FrGetFileData *data;
+    GFile *file;
+    gboolean encrypt_header;
+	GtkWidget *archive_window;
 	gboolean    new_window;
-	const char *password;
-	gboolean    encrypt_header;
-	int         volume_size;
+    const char *mime_type;
+	FrWindow *window;
 
-	if ((response == GTK_RESPONSE_CANCEL) || (response == GTK_RESPONSE_DELETE_EVENT)) {
-		gtk_widget_destroy (GTK_WIDGET (dialog));
-		_archive_operation_cancelled (window, FR_ACTION_CREATING_NEW_ARCHIVE);
-		return;
-	}
+    dialog = FR_NEW_ARCHIVE_DIALOG (source_object);
 
-	file = fr_new_archive_dialog_get_file (FR_NEW_ARCHIVE_DIALOG (dialog), &mime_type);
-	if (file == NULL)
+	data = user_data;
+	if (data == NULL)
 		return;
+
+    file = *data->file;
+	mime_type = *data->mime_type;
+	window = FR_WINDOW(data->window);
 
 	new_window = fr_window_archive_is_present (window) && ! fr_window_is_batch_mode (window);
 	if (new_window)
@@ -4066,9 +4065,9 @@ new_archive_dialog_response_cb (GtkDialog *dialog,
 	else
 		archive_window = (GtkWidget *) window;
 
-	password = fr_new_archive_dialog_get_password (FR_NEW_ARCHIVE_DIALOG (dialog));
-	encrypt_header = fr_new_archive_dialog_get_encrypt_header (FR_NEW_ARCHIVE_DIALOG (dialog));
-	volume_size = fr_new_archive_dialog_get_volume_size (FR_NEW_ARCHIVE_DIALOG (dialog));
+	password = fr_new_archive_dialog_get_password (dialog);
+	encrypt_header = fr_new_archive_dialog_get_encrypt_header (dialog);
+	volume_size = fr_new_archive_dialog_get_volume_size (dialog);
 
 	fr_window_set_password (FR_WINDOW (archive_window), password);
 	fr_window_set_encrypt_header (FR_WINDOW (archive_window), encrypt_header);
@@ -4087,6 +4086,83 @@ new_archive_dialog_response_cb (GtkDialog *dialog,
 	g_object_unref (file);
 }
 
+static void
+new_archive_dialog_response_cb (GtkDialog *dialog,
+                                int response,
+                                gpointer user_data)
+{
+    FrWindow *window = user_data;
+    const char *mime_type;
+
+    if ((response == GTK_RESPONSE_CANCEL) || (response == GTK_RESPONSE_DELETE_EVENT)) {
+        gtk_widget_destroy (GTK_WIDGET (dialog));
+        _archive_operation_cancelled (window, FR_ACTION_CREATING_NEW_ARCHIVE);
+        return;
+    }
+
+    fr_new_archive_dialog_get_file_async (FR_NEW_ARCHIVE_DIALOG (dialog), &mime_type, new_archive_get_file_async_cb);
+}
+
+typedef struct
+{
+	FrWindow *window;
+	GList *list;
+} DragData;
+
+static void add_file_dialog_response_cb(GtkDialog *dialog,
+										int response,
+										gpointer   user_data)
+{
+	DragData *data = user_data;
+	if (response == 0) /* Add */
+		fr_window_archive_add_dropped_items(data->window, data->list);
+	else if (response == 1) /* Open */
+		fr_window_archive_open(data->window, G_FILE(data->list->data), GTK_WINDOW(data->window));
+
+	gtk_widget_destroy(GTK_WIDGET(dialog));
+	_g_object_list_unref (data->list);
+}
+
+static void
+create_archive_dialog_response_cb (GtkDialog *dialog, int response, gpointer user_data)
+{
+  if (response != GTK_RESPONSE_YES)
+    return;
+
+  DragData  *data   = user_data;
+  FrWindow  *window = data->window;
+  GList     *list   = data->list;
+  GFile     *first_file;
+  GFile     *folder;
+  char      *archive_name;
+  GtkWidget *d;
+
+  fr_window_free_batch_data (window);
+  fr_window_batch_append_action (window, FR_BATCH_ACTION_ADD, _g_object_list_ref (list),
+                                 (GFreeFunc) _g_object_list_unref);
+
+  first_file = G_FILE (list->data);
+  folder     = g_file_get_parent (first_file);
+  if (folder != NULL)
+    fr_window_set_open_default_dir (window, folder);
+
+  if ((list->next != NULL) && (folder != NULL))
+    archive_name = g_file_get_basename (folder);
+  else
+    archive_name = g_file_get_basename (first_file);
+
+  d = fr_new_archive_dialog_new (_ ("New Archive"), GTK_WINDOW (window),
+                                 FR_NEW_ARCHIVE_ACTION_SAVE_AS,
+                                 fr_window_get_open_default_dir (window),
+                                 archive_name, NULL);
+  gtk_window_set_modal (GTK_WINDOW (d), TRUE);
+  g_signal_connect (GTK_DIALOG (d), "response",
+                    G_CALLBACK (new_archive_dialog_response_cb), window);
+  gtk_window_present (GTK_WINDOW (d));
+
+  g_free (archive_name);
+  _g_object_unref (folder);
+}
 
 static void
 fr_window_drag_data_received  (GtkWidget          *widget,
@@ -4143,8 +4219,9 @@ fr_window_drag_data_received  (GtkWidget          *widget,
 					   NULL,
 					   _("Could not perform the operation"),
 					   NULL);
-		gtk_dialog_run (GTK_DIALOG (d));
-		gtk_widget_destroy(d);
+		
+		g_signal_connect(GTK_MESSAGE_DIALOG(d), "response", G_CALLBACK(gtk_widget_destroy), data);
+		gtk_widget_show(d);
 
  		return;
 	}
@@ -4162,7 +4239,6 @@ fr_window_drag_data_received  (GtkWidget          *widget,
 	{
 		if (one_file && is_an_archive) {
 			GtkWidget *d;
-			gint       r;
 
 			d = _gtk_message_dialog_new (GTK_WINDOW (window),
 						     GTK_DIALOG_MODAL,
@@ -4175,13 +4251,14 @@ fr_window_drag_data_received  (GtkWidget          *widget,
 
 			gtk_dialog_set_default_response (GTK_DIALOG (d), 2);
 
-			r = gtk_dialog_run (GTK_DIALOG (d));
-			gtk_widget_destroy (GTK_WIDGET (d));
+			DragData* data;
+			data = g_new0 (DragData, 1);
+			data->window = window;
+			data->list = list;
+			_g_object_list_ref (list);
 
-			if (r == 0)  /* Add */
-				fr_window_archive_add_dropped_items (window, list);
-			else if (r == 1)  /* Open */
-				fr_window_archive_open (window, G_FILE (list->data), GTK_WINDOW (window));
+			g_signal_connect(GTK_MESSAGE_DIALOG(d), "response", G_CALLBACK(add_file_dialog_response_cb), data);
+			gtk_widget_show(d);
  		}
  		else
 			fr_window_archive_add_dropped_items (window, list);
@@ -4191,7 +4268,6 @@ fr_window_drag_data_received  (GtkWidget          *widget,
 			fr_window_archive_open (window, G_FILE (list->data), GTK_WINDOW (window));
 		else {
 			GtkWidget *d;
-			int        r;
 
 			d = _gtk_message_dialog_new (GTK_WINDOW (window),
 						     GTK_DIALOG_MODAL,
@@ -4202,47 +4278,15 @@ fr_window_drag_data_received  (GtkWidget          *widget,
 						     NULL);
 
 			gtk_dialog_set_default_response (GTK_DIALOG (d), GTK_RESPONSE_YES);
-			r = gtk_dialog_run (GTK_DIALOG (d));
-			gtk_widget_destroy (GTK_WIDGET (d));
 
-			if (r == GTK_RESPONSE_YES) {
-				GFile     *first_file;
-				GFile     *folder;
-				char      *archive_name;
-				GtkWidget *dialog;
+			DragData* data;
+			data = g_new0 (DragData, 1);
+			data->window = window;
+			data->list = list;
+			_g_object_list_ref (list);
 
-				fr_window_free_batch_data (window);
-				fr_window_batch_append_action (window,
-							       FR_BATCH_ACTION_ADD,
-							       _g_object_list_ref (list),
-							       (GFreeFunc) _g_object_list_unref);
-
-				first_file = G_FILE (list->data);
-				folder = g_file_get_parent (first_file);
-				if (folder != NULL)
-					fr_window_set_open_default_dir (window, folder);
-
-				if ((list->next != NULL) && (folder != NULL))
-					archive_name = g_file_get_basename (folder);
-				else
-					archive_name = g_file_get_basename (first_file);
-
-				dialog = fr_new_archive_dialog_new (_("New Archive"),
-								    GTK_WINDOW (window),
-								    FR_NEW_ARCHIVE_ACTION_SAVE_AS,
-								    fr_window_get_open_default_dir (window),
-								    archive_name,
-								    NULL);
-				gtk_window_set_modal (GTK_WINDOW (dialog), TRUE);
-				g_signal_connect (GTK_DIALOG (dialog),
-						  "response",
-						  G_CALLBACK (new_archive_dialog_response_cb),
-						  window);
-				gtk_window_present (GTK_WINDOW (dialog));
-
-				g_free (archive_name);
-				_g_object_unref (folder);
-			}
+			g_signal_connect(GTK_MESSAGE_DIALOG(d), "response", G_CALLBACK(create_archive_dialog_response_cb), data);
+			gtk_widget_show(d);
 		}
 	}
 
@@ -6754,13 +6798,98 @@ archive_is_encrypted (FrWindow *window,
 }
 
 
+static gboolean
+extract_make_directory_tree (gboolean do_not_extract, ExtractData *edata)
+{
+    FrWindow *window = edata->window;
+	GError   *error = NULL;
+
+    if (! do_not_extract && ! _g_file_make_directory_tree (edata->destination, 0755, &error))
+	{
+	    GtkWidget *d;
+	    char      *details;
+
+	    details = g_strdup_printf (_ ("Could not create the destination "
+	                                  "folder: %s."),
+	                               error->message);
+
+	    d = _gtk_error_dialog_new (GTK_WINDOW (window), 0, NULL,
+	                               _ ("Extraction not performed"), "%s", details);
+	    g_clear_error (&error);
+	    fr_window_show_error_dialog (window, d, GTK_WINDOW (window), details);
+	    fr_window_batch_stop (window);
+	    fr_window_dnd_extraction_finished (window, TRUE);
+
+	    g_free (details);
+
+	    return FALSE;
+	}
+
+	return TRUE;
+}
+
+static void
+extract_perform (gboolean do_not_extract, ExtractData *edata)
+{
+    FrWindow *window = edata->window;
+    if (do_not_extract)
+	{
+	    GtkWidget *d;
+
+	    d = _gtk_message_dialog_new (GTK_WINDOW (window), 0,
+	                                 _ ("Extraction not performed"), NULL,
+	                                 _GTK_LABEL_CLOSE, GTK_RESPONSE_OK, NULL);
+	    gtk_dialog_set_default_response (GTK_DIALOG (d), GTK_RESPONSE_OK);
+	    fr_window_show_error_dialog (window, d, GTK_WINDOW (window),
+	                                 _ ("Extraction not performed"));
+	    fr_window_batch_stop (window);
+	    fr_window_dnd_extraction_finished (window, TRUE);
+
+	    return;
+	}
+
+    if (edata->overwrite == FR_OVERWRITE_ASK)
+	{
+	    OverwriteData *odata;
+
+	    odata              = overwrite_data_new (window);
+	    odata->edata       = edata;
+	    odata->extract_all = (edata->file_list == NULL)
+	                         || (g_list_length (edata->file_list)
+	                             == window->archive->files->len);
+	    if (edata->file_list == NULL)
+		edata->file_list = fr_window_get_file_list (window);
+	    odata->current_file = odata->edata->file_list;
+
+	    _fr_window_ask_overwrite_dialog (odata);
+	}
+    else
+		_fr_window_archive_extract_from_edata (window, edata);
+}
+
+static void
+should_extract_dialog_response_cb (GtkDialog *dialog, 
+								int response, 
+								gpointer user_data)
+{
+    gboolean do_not_extract = FALSE;
+	ExtractData *edata = user_data;
+
+    if (response != GTK_RESPONSE_YES)
+		do_not_extract = TRUE;
+
+	if(extract_make_directory_tree(do_not_extract, edata))
+		extract_perform(do_not_extract, edata);
+
+    gtk_widget_destroy (GTK_WIDGET (dialog));
+}
+
 /* ask some questions to the user before calling _fr_window_archive_extract_from_edata */
 static void
 _fr_window_archive_extract_from_edata_maybe (FrWindow    *window,
 					     ExtractData *edata)
 {
 	gboolean  do_not_extract = FALSE;
-	GError   *error = NULL;
 
 	if (archive_is_encrypted (window, edata->file_list) && (window->priv->password == NULL)) {
 		dlg_ask_password (window);
@@ -6775,7 +6904,6 @@ _fr_window_archive_extract_from_edata_maybe (FrWindow    *window,
 
 		if (! ForceDirectoryCreation && ! edata->avoid_tarbombs) {
 			GtkWidget *d;
-			int        r;
 			char      *folder_name;
 			char      *msg;
 
@@ -6792,68 +6920,21 @@ _fr_window_archive_extract_from_edata_maybe (FrWindow    *window,
 						     NULL);
 
 			gtk_dialog_set_default_response (GTK_DIALOG (d), GTK_RESPONSE_YES);
-			r = gtk_dialog_run (GTK_DIALOG (d));
-			gtk_widget_destroy (GTK_WIDGET (d));
+			g_signal_connect(GTK_MESSAGE_DIALOG(d), "response", G_CALLBACK(should_extract_dialog_response_cb), edata);
+			gtk_widget_show(d);
 
 			g_free (msg);
-
-			if (r != GTK_RESPONSE_YES)
-				do_not_extract = TRUE;
 		}
-
-		if (! do_not_extract && ! _g_file_make_directory_tree (edata->destination, 0755, &error)) {
-			GtkWidget *d;
-			char      *details;
-
-			details = g_strdup_printf (_("Could not create the destination folder: %s."), error->message);
-			d = _gtk_error_dialog_new (GTK_WINDOW (window),
-						   0,
-						   NULL,
-						   _("Extraction not performed"),
-						   "%s",
-						   details);
-			g_clear_error (&error);
-			fr_window_show_error_dialog (window, d, GTK_WINDOW (window), details);
-			fr_window_batch_stop (window);
-			fr_window_dnd_extraction_finished (window, TRUE);
-
-			g_free (details);
-
-			return;
+		else
+		{
+			if(extract_make_directory_tree(do_not_extract, edata))
+				extract_perform(do_not_extract, edata);
 		}
-	}
-
-	if (do_not_extract) {
-		GtkWidget *d;
-
-		d = _gtk_message_dialog_new (GTK_WINDOW (window),
-					     0,
-					     _("Extraction not performed"),
-					     NULL,
-					     _GTK_LABEL_CLOSE, GTK_RESPONSE_OK,
-					     NULL);
-		gtk_dialog_set_default_response (GTK_DIALOG (d), GTK_RESPONSE_OK);
-		fr_window_show_error_dialog (window, d, GTK_WINDOW (window), _("Extraction not performed"));
-		fr_window_batch_stop (window);
-		fr_window_dnd_extraction_finished (window, TRUE);
-
-		return;
-	}
-
-	if (edata->overwrite == FR_OVERWRITE_ASK) {
-		OverwriteData *odata;
-
-		odata = overwrite_data_new (window);
-		odata->edata = edata;
-		odata->extract_all = (edata->file_list == NULL) || (g_list_length (edata->file_list) == window->archive->files->len);
-		if (edata->file_list == NULL)
-			edata->file_list = fr_window_get_file_list (window);
-		odata->current_file = odata->edata->file_list;
-
-		_fr_window_ask_overwrite_dialog (odata);
 	}
 	else
-		_fr_window_archive_extract_from_edata (window, edata);
+	{
+		extract_perform(do_not_extract, edata);
+	}
 }
 
 
@@ -7512,8 +7593,8 @@ fr_window_archive_save_as (FrWindow   *window,
 					   message,
 					   "%s",
 					   _("Archive type not supported."));
-		gtk_dialog_run (GTK_DIALOG (d));
-		gtk_widget_destroy (d);
+		g_signal_connect(GTK_MESSAGE_DIALOG(d), "response", G_CALLBACK(gtk_widget_destroy), NULL);
+		gtk_widget_show(d);
 
 		g_free (message);
 
@@ -7568,6 +7649,41 @@ fr_window_archive_save_as (FrWindow   *window,
 			    cdata);
 }
 
+static void
+save_as_archive_get_file_async_cb (GObject *source_object, GAsyncResult *res, gpointer user_data)
+{
+    const char *password;
+    int volume_size;
+    GSettings *settings;
+    FrNewArchiveDialog *dialog;
+    GFile *file;
+    gboolean encrypt_header;
+	const char *mime_type;
+	FrGetFileData *data;
+	FrWindow *window;
+
+    dialog = FR_NEW_ARCHIVE_DIALOG (source_object);
+    data = user_data;
+	if (data == NULL)
+		return;
+
+    file = *data->file;
+	mime_type = *data->mime_type;
+	window = FR_WINDOW(data->window);
+
+    password = fr_new_archive_dialog_get_password (dialog);
+    encrypt_header = fr_new_archive_dialog_get_encrypt_header (dialog);
+    volume_size = fr_new_archive_dialog_get_volume_size (dialog);
+
+    settings = g_settings_new (FILE_ROLLER_SCHEMA_NEW);
+    g_settings_set_int (settings, PREF_NEW_VOLUME_SIZE, volume_size);
+    g_object_unref (settings);
+
+    fr_window_archive_save_as (window, file, mime_type, password, encrypt_header, volume_size);
+
+    gtk_widget_destroy (GTK_WIDGET (dialog));
+    g_object_unref (file);
+}
 
 static void
 save_as_archive_dialog_response_cb (GtkDialog *dialog,
@@ -7575,12 +7691,7 @@ save_as_archive_dialog_response_cb (GtkDialog *dialog,
 				    gpointer   user_data)
 {
 	FrWindow   *window = user_data;
-	GFile      *file;
 	const char *mime_type;
-	const char *password;
-	gboolean    encrypt_header;
-	int         volume_size;
-	GSettings  *settings;
 
 	if ((response == GTK_RESPONSE_CANCEL) || (response == GTK_RESPONSE_DELETE_EVENT)) {
 		gtk_widget_destroy (GTK_WIDGET (dialog));
@@ -7591,24 +7702,8 @@ save_as_archive_dialog_response_cb (GtkDialog *dialog,
 	if (response != GTK_RESPONSE_OK)
 		return;
 
-	file = fr_new_archive_dialog_get_file (FR_NEW_ARCHIVE_DIALOG (dialog), &mime_type);
-	if (file == NULL)
-		return;
-
-	password = fr_new_archive_dialog_get_password (FR_NEW_ARCHIVE_DIALOG (dialog));
-	encrypt_header = fr_new_archive_dialog_get_encrypt_header (FR_NEW_ARCHIVE_DIALOG (dialog));
-	volume_size = fr_new_archive_dialog_get_volume_size (FR_NEW_ARCHIVE_DIALOG (dialog));
-
-	settings = g_settings_new (FILE_ROLLER_SCHEMA_NEW);
-	g_settings_set_int (settings, PREF_NEW_VOLUME_SIZE, volume_size);
-	g_object_unref (settings);
-
-	fr_window_archive_save_as (window, file, mime_type, password, encrypt_header, volume_size);
-
-	gtk_widget_destroy (GTK_WIDGET (dialog));
-	g_object_unref (file);
+	fr_new_archive_dialog_get_file_async (FR_NEW_ARCHIVE_DIALOG (dialog), &mime_type, save_as_archive_get_file_async_cb);	
 }
-
 
 void
 fr_window_action_save_as (FrWindow *window)
@@ -7869,8 +7964,8 @@ fr_window_archive_encrypt (FrWindow   *window,
 					   message,
 					   "%s",
 					   _("Archive type not supported."));
-		gtk_dialog_run (GTK_DIALOG (d));
-		gtk_widget_destroy (d);
+		g_signal_connect(GTK_MESSAGE_DIALOG(d), "response", G_CALLBACK(gtk_widget_destroy), NULL);
+		gtk_widget_show(d);
 
 		g_free (message);
 		g_object_unref (temp_new_file);
@@ -8042,6 +8137,7 @@ fr_window_view_last_output (FrWindow   *window,
 
 
 typedef struct {
+	FrWindow *window;
 	char     *path_to_rename;
 	char     *old_name;
 	char     *new_name;
@@ -8051,19 +8147,20 @@ typedef struct {
 	char     *original_path;
 } RenameData;
 
-
-static RenameData*
-rename_data_new (const char *path_to_rename,
-		 const char *old_name,
-		 const char *new_name,
-		 const char *current_dir,
-		 gboolean    is_dir,
-		 gboolean    dir_in_archive,
-		 const char *original_path)
+static RenameData *
+rename_data_new(FrWindow *window,
+				const char *path_to_rename,
+				const char *old_name,
+				const char *new_name,
+				const char *current_dir,
+				gboolean is_dir,
+				gboolean dir_in_archive,
+				const char *original_path)
 {
 	RenameData *rdata;
 
 	rdata = g_new0 (RenameData, 1);
+	rdata->window = window;
 	rdata->path_to_rename = g_strdup (path_to_rename);
 	if (old_name != NULL)
 		rdata->old_name = g_strdup (old_name);
@@ -8078,7 +8175,6 @@ rename_data_new (const char *path_to_rename,
 
 	return rdata;
 }
-
 
 static void
 rename_data_free (RenameData *rdata)
@@ -8108,27 +8204,12 @@ archive_rename_ready_cb (GObject      *source_object,
 	_g_error_free (error);
 }
 
-
 static void
-rename_selection (FrWindow   *window,
-		  const char *path_to_rename,
-		  const char *old_name,
-		  const char *new_name,
-		  const char *current_dir,
-		  gboolean    is_dir,
-		  gboolean    dir_in_archive,
-		  const char *original_path)
+rename_selection(FrWindow *window,
+				 RenameData *rdata)
 {
-	RenameData *rdata;
 	GList      *file_list;
 
-	rdata = rename_data_new (path_to_rename,
-				 old_name,
-				 new_name,
-				 current_dir,
-				 is_dir,
-				 dir_in_archive,
-				 original_path);
 	fr_window_set_current_action (window,
 					    FR_BATCH_ACTION_RENAME,
 					    rdata,
@@ -8143,7 +8224,7 @@ rename_selection (FrWindow   *window,
 		      "volume-size", window->priv->volume_size,
 		      NULL);
 
-	if (is_dir)
+	if (rdata->is_dir)
 		file_list = get_dir_list_from_path (window, rdata->path_to_rename);
 	else
 		file_list = g_list_append (NULL, g_strdup (rdata->path_to_rename));
@@ -8162,7 +8243,6 @@ rename_selection (FrWindow   *window,
 
 	_g_string_list_free (file_list);
 }
-
 
 static gboolean
 valid_name (const char  *new_name,
@@ -8236,6 +8316,115 @@ name_is_present (FrWindow    *window,
 	return retval;
 }
 
+static void
+try_rename_selection(FrWindow *window,
+					 char *path_to_rename,
+					 char *parent_dir,
+					 char *old_name,
+					 gboolean renaming_dir,
+					 gboolean dir_in_archive,
+					 char *original_path);
+
+static void
+rename_dialog_response_cb(GtkDialog *dialog, int response, gpointer user_data)
+{
+	RenameData *rdata = user_data;
+
+	try_rename_selection(rdata->window,
+						 rdata->path_to_rename,
+						 rdata->current_dir,
+						 rdata->old_name,
+						 rdata->is_dir,
+						 rdata->dir_in_archive,
+						 rdata->original_path);
+
+	gtk_widget_destroy(GTK_WIDGET(dialog));
+}
+
+static void
+try_rename_selection(FrWindow *window,
+					 char *path_to_rename,
+					 char *parent_dir,
+					 char *old_name,
+					 gboolean renaming_dir,
+					 gboolean dir_in_archive,
+					 char *original_path)
+{
+	char *utf8_old_name;
+	char *utf8_new_name;
+
+	utf8_old_name = g_locale_to_utf8(old_name, -1, 0, 0, 0);
+	utf8_new_name = _gtk_request_dialog_run(GTK_WINDOW(window),
+											(GTK_DIALOG_DESTROY_WITH_PARENT | GTK_DIALOG_MODAL),
+											_("Rename"),
+											(renaming_dir ? _("_New folder name:") : _("_New file name:")),
+											utf8_old_name,
+											1024,
+											_GTK_LABEL_CANCEL,
+											_("_Rename"));
+	g_free(utf8_old_name);
+
+	if (utf8_new_name != NULL)
+	{
+		RenameData *rdata;
+		char *new_name;
+		char *reason = NULL;
+
+		new_name = g_filename_from_utf8(utf8_new_name, -1, 0, 0, 0);
+		g_free(utf8_new_name);
+
+		rdata = rename_data_new (window,
+				path_to_rename,
+				old_name,
+				new_name,
+				parent_dir,
+				renaming_dir,
+				dir_in_archive,
+				original_path);
+
+		if (!valid_name(new_name, old_name, &reason))
+		{
+			char *utf8_name = g_filename_display_name(new_name);
+			GtkWidget *dlg;
+
+			dlg = _gtk_error_dialog_new(GTK_WINDOW(window),
+										GTK_DIALOG_DESTROY_WITH_PARENT,
+										NULL,
+										(renaming_dir ? _("Could not rename the folder") : _("Could not rename the file")),
+										"%s",
+										reason);
+			g_signal_connect(GTK_MESSAGE_DIALOG(dlg), "response", G_CALLBACK(rename_dialog_response_cb), NULL);
+			gtk_widget_show(dlg);
+
+			g_free(reason);
+			g_free(utf8_name);
+			g_free(new_name);
+			return;
+		}
+
+		if (name_is_present(window, parent_dir, new_name, &reason))
+		{
+			GtkWidget *dlg;
+
+			dlg = _gtk_message_dialog_new(GTK_WINDOW(window),
+										  GTK_DIALOG_MODAL,
+										  (renaming_dir ? _("Could not rename the folder") : _("Could not rename the file")),
+										  reason,
+										  _GTK_LABEL_CLOSE, GTK_RESPONSE_OK,
+										  NULL);
+			g_signal_connect(GTK_MESSAGE_DIALOG(dlg), "response", G_CALLBACK(rename_dialog_response_cb), NULL);
+			gtk_widget_show(dlg);
+
+			g_free(reason);
+			g_free(new_name);
+			return;
+		}
+
+		rename_selection(window, rdata);
+
+		g_free(new_name);
+	}
+}
 
 void
 fr_window_rename_selection (FrWindow *window,
@@ -8247,8 +8436,6 @@ fr_window_rename_selection (FrWindow *window,
 	gboolean  renaming_dir = FALSE;
 	gboolean  dir_in_archive = FALSE;
 	char     *original_path = NULL;
-	char     *utf8_old_name;
-	char     *utf8_new_name;
 
 	if (from_sidebar) {
 		path_to_rename = fr_window_get_selected_folder_in_tree_view (window);
@@ -8289,78 +8476,7 @@ fr_window_rename_selection (FrWindow *window,
 		file_data_free (selected_item);
 	}
 
- retry__rename_selection:
-	utf8_old_name = g_locale_to_utf8 (old_name, -1 ,0 ,0 ,0);
-	utf8_new_name = _gtk_request_dialog_run (GTK_WINDOW (window),
-						 (GTK_DIALOG_DESTROY_WITH_PARENT
-						  | GTK_DIALOG_MODAL),
-						 _("Rename"),
-						 (renaming_dir ? _("_New folder name:") : _("_New file name:")),
-						 utf8_old_name,
-						 1024,
-						 _GTK_LABEL_CANCEL,
-						 _("_Rename"));
-	g_free (utf8_old_name);
-
-	if (utf8_new_name != NULL) {
-		char *new_name;
-		char *reason = NULL;
-
-		new_name = g_filename_from_utf8 (utf8_new_name, -1, 0, 0, 0);
-		g_free (utf8_new_name);
-
-		if (! valid_name (new_name, old_name, &reason)) {
-			char      *utf8_name = g_filename_display_name (new_name);
-			GtkWidget *dlg;
-
-			dlg = _gtk_error_dialog_new (GTK_WINDOW (window),
-						     GTK_DIALOG_DESTROY_WITH_PARENT,
-						     NULL,
-						     (renaming_dir ? _("Could not rename the folder") : _("Could not rename the file")),
-						     "%s",
-						     reason);
-			gtk_dialog_run (GTK_DIALOG (dlg));
-			gtk_widget_destroy (dlg);
-
-			g_free (reason);
-			g_free (utf8_name);
-			g_free (new_name);
-
-			goto retry__rename_selection;
-		}
-
-		if (name_is_present (window, parent_dir, new_name, &reason)) {
-			GtkWidget *dlg;
-
-			dlg = _gtk_message_dialog_new (GTK_WINDOW (window),
-						       GTK_DIALOG_MODAL,
-						       (renaming_dir ? _("Could not rename the folder") : _("Could not rename the file")),
-						       reason,
-						       _GTK_LABEL_CLOSE, GTK_RESPONSE_OK,
-						       NULL);
-			gtk_dialog_run (GTK_DIALOG (dlg));
-			gtk_widget_destroy (dlg);
-			g_free (reason);
-			g_free (new_name);
-			goto retry__rename_selection;
-		}
-
-		rename_selection (window,
-				  path_to_rename,
-				  old_name,
-				  new_name,
-				  parent_dir,
-				  renaming_dir,
-				  dir_in_archive,
-				  original_path);
-
-		g_free (new_name);
-	}
-
-	g_free (old_name);
-	g_free (parent_dir);
-	g_free (path_to_rename);
-	g_free (original_path);
+	try_rename_selection(window, path_to_rename, parent_dir, old_name, renaming_dir, dir_in_archive, original_path);
 }
 
 
@@ -9487,14 +9603,8 @@ fr_window_exec_batch_action (FrWindow      *window,
 		debug (DEBUG_INFO, "[BATCH] RENAME\n");
 
 		rdata = action->data;
-		rename_selection (window,
-				  rdata->path_to_rename,
-				  rdata->old_name,
-				  rdata->new_name,
-				  rdata->current_dir,
-				  rdata->is_dir,
-				  rdata->dir_in_archive,
-				  rdata->original_path);
+		rename_selection(window,
+						 rdata);
 		break;
 
 	case FR_BATCH_ACTION_PASTE:
