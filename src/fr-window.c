@@ -4128,6 +4128,7 @@ new_archive_dialog_response_cb (GtkDialog *dialog,
 	GtkWidget  *archive_window;
 	gboolean    new_window;
 	const char *password;
+	FrCompression compression;
 	gboolean    encrypt_header;
 	int         volume_size;
 
@@ -4150,7 +4151,9 @@ new_archive_dialog_response_cb (GtkDialog *dialog,
 	password = fr_new_archive_dialog_get_password (FR_NEW_ARCHIVE_DIALOG (dialog));
 	encrypt_header = fr_new_archive_dialog_get_encrypt_header (FR_NEW_ARCHIVE_DIALOG (dialog));
 	volume_size = fr_new_archive_dialog_get_volume_size (FR_NEW_ARCHIVE_DIALOG (dialog));
+	compression = fr_new_archive_dialog_get_compression (FR_NEW_ARCHIVE_DIALOG (dialog));
 
+	fr_window_set_compression(window, compression);
 	fr_window_set_password (FR_WINDOW (archive_window), password);
 	fr_window_set_encrypt_header (FR_WINDOW (archive_window), encrypt_header);
 	fr_window_set_volume_size (FR_WINDOW (archive_window), volume_size);
@@ -6175,6 +6178,7 @@ fr_window_archive_close (FrWindow *window)
 	fr_clipboard_data_unref (private->copy_data);
 	private->copy_data = NULL;
 
+	fr_window_set_compression (window, FR_COMPRESSION_NORMAL);
 	fr_window_set_password (window, NULL);
 	fr_window_set_volume_size (window, 0);
 	fr_window_history_clear (window);

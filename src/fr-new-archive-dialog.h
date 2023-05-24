@@ -53,6 +53,7 @@ void		fr_new_archive_dialog_set_files_to_add    (FrNewArchiveDialog  *dialog,
 GFile *         fr_new_archive_dialog_get_file            (FrNewArchiveDialog  *dialog,
 							   const char         **mime_type);
 const char *    fr_new_archive_dialog_get_password        (FrNewArchiveDialog  *dialog);
+guint64         fr_new_archive_dialog_get_compression     (FrNewArchiveDialog  *dialog);
 gboolean        fr_new_archive_dialog_get_encrypt_header  (FrNewArchiveDialog  *dialog);
 int             fr_new_archive_dialog_get_volume_size     (FrNewArchiveDialog  *dialog);
 

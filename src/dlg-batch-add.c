@@ -44,6 +44,7 @@ dialog_response_cb (GtkDialog *dialog,
 		if (file == NULL)
 			return;
 
+		fr_window_set_compression(window, fr_new_archive_dialog_get_compression (FR_NEW_ARCHIVE_DIALOG (dialog)));
 		fr_window_set_password (window, fr_new_archive_dialog_get_password (FR_NEW_ARCHIVE_DIALOG (dialog)));
 		fr_window_set_encrypt_header (window, fr_new_archive_dialog_get_encrypt_header (FR_NEW_ARCHIVE_DIALOG (dialog)));
 		fr_window_set_volume_size (window, fr_new_archive_dialog_get_volume_size (FR_NEW_ARCHIVE_DIALOG (dialog)));
