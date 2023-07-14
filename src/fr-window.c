@@ -44,6 +44,7 @@
 #include "fr-window.h"
 #include "fr-window-actions-entries.h"
 #include "fr-file-data.h"
+#include "fr-fuse.h"
 #include "file-utils.h"
 #include "glib-utils.h"
 #include "fr-init.h"
@@ -353,6 +354,8 @@ typedef struct {
 
 	GFile            *last_extraction_destination;
 	GList            *last_extraction_files_first_level; /* GFile list */
+
+	FrFuse           *fr_fuse;
 } FrWindowPrivate;
 
 
@@ -535,6 +538,8 @@ fr_window_free_private_data (FrWindow *window)
 	_g_object_unref (private->cancellable);
 	g_hash_table_unref (private->named_dialogs);
 	g_object_unref (private->window_group);
+
+	g_clear_object (&private->fr_fuse);
 }
 
 
@@ -3780,18 +3785,78 @@ fr_window_on_drop (GtkDropTarget *target,
 		   gpointer       data)
 {
 	FrWindow *window = data;
+	FrWindowPrivate *private = fr_window_get_instance_private (window);
 
 	if (!G_VALUE_HOLDS (value, G_TYPE_FILE))
 		return FALSE;
 
 	// FIXME: support multiple files.
 	GFile *file = g_value_get_object (value);
+
+	/*
+	 * If we drag a file out of window, and drop it back into window, we
+	 * get a loop that we want to read that file from fuse to replace the
+	 * the file in archive, but fuse will read the file from archive. To
+	 * prevent this, check and break the loop here.
+	 */
+	const char *current = fr_window_get_current_location (window);
+	if (fr_fuse_query_file_in_path (private->fr_fuse, file, current))
+		return FALSE;
+
 	GList *list = g_list_append (NULL, file);
 	fr_window_on_dropped_files (window, list);
 
 	g_list_free (list);
 
 	return TRUE;
+}
+
+
+static GdkContentProvider *
+fr_window_on_drag_prepare (GtkDragSource *source,
+			   double         x,
+			   double         y,
+			   gpointer       user_data)
+{
+	FrWindow *window = user_data;
+	FrWindowPrivate *private = fr_window_get_instance_private (window);
+	GList *selection;
+	GFile *fuse_dir;
+	g_autoslist (GFile) file_list = NULL;
+	g_autoptr (GFile) temp_dir = NULL;
+
+	/*
+	 * Include dirs, so we could drag an empty dir, but don't recursive,
+	 * because this will be handled by reply to readdir with FUSE.
+	 */
+	selection = fr_window_get_file_list_selection (window, FALSE, TRUE, NULL);
+
+	if (selection == NULL)
+		return NULL;
+
+	gtk_gesture_set_state (GTK_GESTURE (source), GTK_EVENT_SEQUENCE_CLAIMED);
+
+	/*
+	 * Generally when you drag files from archives to other place, you want
+	 * copy those files.
+	 */
+	gtk_drag_source_set_actions (source, GDK_ACTION_COPY);
+
+	if (private->fr_fuse == NULL)
+		return NULL;
+
+	fuse_dir = fr_fuse_get_mount_dir (private->fr_fuse);
+	for (GList *l = selection; l != NULL; l = l->next) {
+		const char *filename = l->data;
+		GFile *file = _g_file_append_path (fuse_dir, filename, NULL);
+		file_list = g_slist_prepend (file_list, file);
+	}
+	file_list = g_slist_reverse (file_list);
+
+	g_list_free_full (selection, g_free);
+
+	/* TODO: Attach an icon for this drag. */
+	return gdk_content_provider_new_typed (GDK_TYPE_FILE_LIST, file_list);
 }
 
 
@@ -4648,6 +4713,8 @@ fr_window_construct (FrWindow *window)
 	private->pd_last_message = NULL;
 	private->pd_last_fraction = 0.0;
 
+	private->fr_fuse = NULL;
+
 	/* Create the widgets. */
 
 	/* * File list. */
@@ -4705,6 +4772,10 @@ fr_window_construct (FrWindow *window)
 			  G_CALLBACK (list_view_button_pressed_cb),
 			  window);
 	gtk_widget_add_controller (GTK_WIDGET (private->list_view), GTK_EVENT_CONTROLLER (gesture_click));
+	GtkDragSource *drag_source = gtk_drag_source_new ();
+	gtk_event_controller_set_propagation_phase (GTK_EVENT_CONTROLLER (drag_source), GTK_PHASE_CAPTURE);
+	g_signal_connect (drag_source, "prepare", G_CALLBACK (fr_window_on_drag_prepare), window);
+	gtk_widget_add_controller(GTK_WIDGET (private->list_view), GTK_EVENT_CONTROLLER (drag_source));
 
 	/*g_signal_connect (GTK_TREE_VIEW (private->list_view),
 			  "motion_notify_event",
@@ -4774,23 +4845,6 @@ fr_window_construct (FrWindow *window)
 			  "changed",
 			  G_CALLBACK (dir_tree_selection_changed_cb),
 			  window);
-
-	/*g_signal_connect (GTK_TREE_VIEW (private->tree_view),
-			  "drag_begin",
-			  G_CALLBACK (folde_tree_drag_begin),
-			  window);
-	g_signal_connect (GTK_TREE_VIEW (private->tree_view),
-			  "drag_end",
-			  G_CALLBACK (file_list_drag_end),
-			  window);
-	g_signal_connect (GTK_TREE_VIEW (private->tree_view),
-			  "drag_data_get",
-			  G_CALLBACK (fr_window_folder_tree_drag_data_get),
-			  window);*/
-	/*gtk_drag_source_set (private->tree_view,
-			     GDK_BUTTON1_MASK,
-			     folder_tree_targets, G_N_ELEMENTS (folder_tree_targets),
-			     GDK_ACTION_COPY);*/
 
 	tree_scrolled_window = gtk_scrolled_window_new ();
 	gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (tree_scrolled_window),
@@ -5053,6 +5107,20 @@ _fr_window_set_archive (FrWindow  *window,
 
 
 static void
+_fr_window_create_fuse (FrWindow *window)
+{
+	FrWindowPrivate *private = fr_window_get_instance_private (window);
+
+	g_clear_object (&private->fr_fuse);
+
+	if (window->archive == NULL)
+		return;
+
+	private->fr_fuse = fr_fuse_new (window->archive, private->password, NULL);
+}
+
+
+static void
 _fr_window_set_archive_file (FrWindow *window,
 			     GFile    *file)
 {
@@ -5094,9 +5162,17 @@ archive_list_ready_cb (GObject      *source_object,
 {
 	FrWindow *window = user_data;
 	GError   *error = NULL;
+	FrWindowPrivate *private = fr_window_get_instance_private (window);
 
 	fr_archive_operation_finish (FR_ARCHIVE (source_object), result, &error);
 	_archive_operation_completed (window, FR_ACTION_LISTING_CONTENT, error);
+
+	/*
+	 * Window will list archive again after modifying archive, so here is a
+	 * good place to handle added/removed files.
+	 */
+	if (private->fr_fuse != NULL)
+		fr_fuse_update_inodes (private->fr_fuse);
 
 	_g_error_free (error);
 }
@@ -5132,6 +5208,7 @@ archive_open_ready_cb (GObject      *source_object,
 
 	archive = fr_archive_open_finish (G_FILE (source_object), result, &error);
 	_fr_window_set_archive (window, archive);
+	_fr_window_create_fuse (window);
 
 	g_signal_emit (window,
 		       fr_window_signals[ARCHIVE_LOADED],

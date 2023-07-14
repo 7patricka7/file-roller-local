@@ -35,6 +35,7 @@ gtk_dep = dependency('gtk4', version: gtk4_version)
 libportal_dep = dependency('libportal', version: '>= 0.5', required: use_native_appchooser)
 libportal_gtk4_dep = dependency('libportal-gtk4', version: '>= 0.5', required: use_native_appchooser)
 libadwaita_dep = dependency('libadwaita-1', version: '>= 1.2')
+fuse3_dep = dependency('fuse3', required: true)
 
 # Optional dependencies
 gobject_introspection_dep = dependency('gobject-introspection-1.0', required: get_option('introspection'))
