@@ -556,6 +556,17 @@ fr_new_archive_dialog_get_password (FrNewArchiveDialog *self)
 	return password;
 }
 
+guint64
+fr_new_archive_dialog_get_compression(FrNewArchiveDialog *self)
+{
+	const char *compression_id = NULL;
+	gint64 compression_id_int;
+	
+	compression_id = gtk_combo_box_get_active_id (GTK_COMBO_BOX (GET_WIDGET ("compression_level")));
+	compression_id_int = g_ascii_strtoll(compression_id, NULL, 10);
+
+	return compression_id_int;
+}
 
 gboolean
 fr_new_archive_dialog_get_encrypt_header (FrNewArchiveDialog *self)
