@@ -131,6 +131,9 @@ static struct {
 		{ "application/x-zstd-compressed-tar", TRUE },
 		{ "application/zstd", TRUE },
 		{ "multipart/x-zip", TRUE },
+		{ "application/x-7z-compressed", TRUE},
+		{ "application/x-7z-compressed-tar", TRUE},
+		{ "application/vnd.rar", TRUE },
 		{ NULL, FALSE }
 };
 
